@@ -1,0 +1,23 @@
+[project]
+name = "probevelo"
+version = "0.1.0"
+description = "Work-around for RNA velocity inference from 10X Fixed RNA Profiling using probe sets"
+authors = [{ name = "Yichen Wang", email = "wayichen@umich.edu" }]
+license = { text = "GPL-3" }
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pandas",
+    "pysam",
+    "multiprocessing",
+    "tqdm",
+    "scipy",
+    "anndata"
+]
+
+[project.urls]
+Homepage = "https://github.com/mvfki/probevelo"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
