@@ -1,6 +1,6 @@
 # probevelo
 
-Work-around for RNA velocity inference from 10X Fixed RNA Profiling using probe sets
+Work-around for RNA velocity inference from 10X Fixed RNA Profiling using probe sets.
 
 ## Installation
 
@@ -13,13 +13,15 @@ pip install git+https://github.com/mvfki/probevelo.git
 ## Usage
 
 Load the probe set information into a `probe_set` instance and create a `bam_parser` instance that will do the counting.
-Then, simply use the `bam_parser.count_splice` method to count spliced and unspliced reads and return an AnnData object.
+Then, simply use the `bam_parser.count_splice` method to count spliced and unspliced reads from the provided BAM file and return an AnnData object.
+
+Note that the BAM file must be indexed, e.g. you must have `sample_alignment.bam.bai` in the same directory as the input file `sample_alignment.bam`.
 
 ```python
 import probevelo
 
 probe_set = probevelo.probe_set('/path/to/10x/out/probe_set.csv')
-bam_parser = probevelo.bam_parser('/path/to/10x/out/bam_file.bam')
+bam_parser = probevelo.bam_parser('/path/to/10x/out/sample_alignment.bam')
 
 adata = bam_parser.count_splice(probe_set, adata=True)
 ```
