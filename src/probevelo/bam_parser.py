@@ -27,7 +27,7 @@ class bam_parser:
     count_splice(probe_set: probe_set, n_thread: int = 1, adata: bool = False)
         Count spliced and unspliced reads to cell by gene CSR sparse matrices.
     """
-    def __init__(self, file: str, n_thread: int = 1):
+    def __init__(self, file: str, n_thread: int = 1, chunk_size: int = 100000):
         """
         Initializes the BamParser with a BAM file.
 
@@ -37,6 +37,8 @@ class bam_parser:
             The path to the BAM file to be parsed.
         n_thread : int, optional
             Number of threads to use for parallel processing, by default 1.
+        chunk_size : int, optional
+            Size of the chunks to process reads in parallel, by default 100000.
         """
         self.file = file
         if n_thread < 1:
@@ -52,32 +54,29 @@ class bam_parser:
                 "are available. Using all available threads."
             )
             n_thread = mp.cpu_count()
+
+        # Initialize the chunking parameters
         self.n_thread = n_thread
-
-        # self.n_reads = 0
+        self.chunk_size = chunk_size
+        self.n_reads = 0
         with pysam.AlignmentFile(file, "rb") as bam:
-            # check if index is available
-            if not bam.has_index():
-                raise FileNotFoundError(
-                    f"Index file for BAM {file} not found. Please index the " +
-                    "BAM file before using this parser."
-                )
-            # cell_barcodes = set()
-            # self.n_reads = bam.count()
-            self.regions = list(bam.references)
+            self.n_reads = bam.count()
+        print(f"Found {self.n_reads} reads in the BAM file.")
+        self.ranges = [(i, min(i + chunk_size, self.n_reads))
+                       for i in range(0, self.n_reads, chunk_size)]
 
-        with mp.Pool(processes=self.n_thread) as pool:
-            cell_barcodes_per_region = list(tqdm.tqdm(
+        with mp.Pool(self.n_thread) as pool:
+            cb_per_region = list(tqdm.tqdm(
                 pool.imap(
-                    self._collect_cell_barcodes,
-                    [(self.file, region) for region in self.regions]
-                    ),
-                total=len(self.regions),
-                desc="Collecting cell barcodes",
-                unit="regions"
+                    self._collect_chunk_cb, self.ranges
+                ),
+                total=len(self.ranges),
+                desc="Collecting cell barcodes from chunks",
+                unit="chunks"
             ))
+
         cell_barcodes = set()
-        for region in cell_barcodes_per_region:
+        for region in cb_per_region:
             # region is a set of barcodes. Now update the union
             cell_barcodes = cell_barcodes.union(region)
 
@@ -90,31 +89,22 @@ class bam_parser:
         print(f"Found {self.cell_map.shape[0]} unique cell barcodes in " +
               "the BAM file.")
 
-    def _collect_cell_barcodes(self, args):
-        """
-        Collect cell barcodes from a region of the BAM file.
-
-        Parameters
-        ----------
-        args : tuple
-            A tuple containing the bam filename and region to process.
-
-        Returns
-        -------
-        set
-            A set of cell barcodes found in the specified region.
-        """
-        file, region = args
-        cell_barcodes = set()
-        with pysam.AlignmentFile(file, "rb") as bam:
-            for read in bam.fetch(region=region):
+    def _collect_chunk_cb(self, chunk_range):
+        start, end = chunk_range
+        cb = set()
+        with pysam.AlignmentFile(self.file, "rb") as bam:
+            for i, read in enumerate(bam.fetch(until_eof=True)):
+                if i < start:
+                    continue
+                if i >= end:
+                    break
                 if read.is_unmapped or \
                         read.is_secondary or \
                         read.is_supplementary or \
                         not read.has_tag("CB"):
                     continue
-                cell_barcodes.add(read.get_tag("CB"))
-        return cell_barcodes
+                cb.add(read.get_tag("CB"))
+        return cb
 
     def count_splice(
             self,
@@ -140,21 +130,34 @@ class bam_parser:
             returns an AnnData object with the counts.
         """
         # Prepare arguments for parallel processing
+        # args = [
+        #     (self.file, region, probe_set)
+        #     for region in self.regions
+        # ]
         args = [
-            (self.file, region, probe_set)
-            for region in self.regions
+            (chunk_range, probe_set)
+            for chunk_range in self.ranges
         ]
-        # Use multiprocessing to process regions in parallel
-        with mp.Pool(processes=self.n_thread) as pool:
+        with mp.Pool(self.n_thread) as pool:
             results = list(tqdm.tqdm(
-                pool.imap(self._process_region, args),
-                total=len(args),
-                desc="Processing regions",
-                unit="regions"
+                pool.imap(
+                    self._process_chunk, args
+                ),
+                total=len(self.ranges),
+                desc="Processing chunks",
+                unit="chunks"
             ))
+        # Use multiprocessing to process regions in parallel
+        # with mp.Pool(processes=self.n_thread) as pool:
+        #     results = list(tqdm.tqdm(
+        #         pool.imap(self._process_region, args),
+        #         total=len(args),
+        #         desc="Processing regions",
+        #         unit="regions"
+        #     ))
 
         # Combine results from all regions
-        print("Merging results from all regions...")
+        print("Merging results...")
         spliced_merge = set()
         unspliced_merge = set()
         for spliced, unspliced in results:
@@ -231,28 +234,17 @@ class bam_parser:
             gene_id = probe_id.split('|')[0]
         return cell_barcode, gene_id, probe_id, umi
 
-    def _process_region(self, args):
-        """
-        Process a region of the BAM file in parallel.
-
-        Parameters
-        ----------
-        args : tuple
-            A tuple containing the bam filename, region to process, probe_set
-            object.
-
-        Returns
-        -------
-        tuple
-            A tuple containing the COO representation of the spliced and
-            unspliced counts for the region.
-        """
-        file, region, probe_set = args
+    def _process_chunk(self, args):
+        chunk_range, probe_set = args
+        start, end = chunk_range
         spliced_counts = set()
         unspliced_counts = set()
-
-        with pysam.AlignmentFile(file, "rb") as bam:
-            for read in bam.fetch(region=region):
+        with pysam.AlignmentFile(self.file, "rb") as bam:
+            for i, read in enumerate(bam.fetch(until_eof=True)):
+                if i < start:
+                    continue
+                if i >= end:
+                    break
                 if read.is_unmapped or \
                         read.is_secondary or \
                         read.is_supplementary:
@@ -283,8 +275,62 @@ class bam_parser:
                     spliced_counts.add(key)
                 else:
                     unspliced_counts.add(key)
-
         return spliced_counts, unspliced_counts
+
+    # def _process_region(self, args):
+    #     """
+    #     Process a region of the BAM file in parallel.
+
+    #     Parameters
+    #     ----------
+    #     args : tuple
+    #         A tuple containing the bam filename, region to process, probe_set
+    #         object.
+
+    #     Returns
+    #     -------
+    #     tuple
+    #         A tuple containing the COO representation of the spliced and
+    #         unspliced counts for the region.
+    #     """
+    #     file, region, probe_set = args
+    #     spliced_counts = set()
+    #     unspliced_counts = set()
+
+    #     with pysam.AlignmentFile(file, "rb") as bam:
+    #         for read in bam.fetch(region=region):
+    #             if read.is_unmapped or \
+    #                     read.is_secondary or \
+    #                     read.is_supplementary:
+    #                 continue
+    #             try:
+    #                 cell_barcode, gene_id, probe_id, umi = \
+    #                     self._parse_read(read)
+    #                 if cell_barcode is None or \
+    #                         gene_id is None or \
+    #                         probe_id is None or \
+    #                         umi is None:
+    #                     continue
+
+    #                 cell_idx = self.cell_map.loc[cell_barcode, 'index']
+    #                 gene_idx = probe_set.gene_map.loc[gene_id, 'index']
+    #                 is_spliced = probe_set.is_spliced(probe_id)
+    #             except KeyError:
+    #                 print(
+    #                     "Failed identifying the cell: ",
+    #                     f"{cell_barcode}, " +
+    #                     f"or gene: {gene_id}, probe: {probe_id}. " +
+    #                     "Skipping this read."
+    #                 )
+    #                 continue
+
+    #             key = (cell_idx, gene_idx, umi)
+    #             if is_spliced:
+    #                 spliced_counts.add(key)
+    #             else:
+    #                 unspliced_counts.add(key)
+
+    #     return spliced_counts, unspliced_counts
 
     def _make_csr(self, struct, probe_set: probe_set):
         """
