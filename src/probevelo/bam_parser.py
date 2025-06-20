@@ -211,17 +211,20 @@ class bam_parser:
             A tuple containing the gene name, cell barcode, and the probe ID.
         """
         if not read.has_tag("CB") or \
-                not read.has_tag("GX") or \
                 not read.has_tag("pr"):
             return None, None, None
         cell_barcode = read.get_tag("CB")
-        gene_id = read.get_tag('GX')
         probe_id = read.get_tag('pr')
-        # For rare case where multiple probes might be tagged
-        gene_id = gene_id.split(';')[0]
-        probe_id = probe_id.split(';')[0]
-        if probe_id == 'NA' or gene_id == 'NA':
-            return None, None, None
+        probes = probe_id.split(';')
+        if len(probes) == 1:
+            probe_id = probes[0]
+            gene_id = probe_id.split('|')[0]
+        else:
+            for probe in probes:
+                if probe != 'NA':
+                    probe_id = probe
+                    gene_id = probe.split('|')[0]
+                    break
         return cell_barcode, gene_id, probe_id
 
     def _process_region(self, args):
