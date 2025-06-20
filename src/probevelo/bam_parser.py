@@ -154,21 +154,26 @@ class bam_parser:
             ))
 
         # Combine results from all regions
-        spliced_merge = {}
-        unspliced_merge = {}
+        spliced_merge = set()
+        unspliced_merge = set()
         for spliced, unspliced in results:
-            for key, count in spliced.items():
-                if key not in spliced_merge:
-                    spliced_merge[key] = 0
-                spliced_merge[key] += count
-            for key, count in unspliced.items():
-                if key not in unspliced_merge:
-                    unspliced_merge[key] = 0
-                unspliced_merge[key] += count
+            spliced_merge = spliced_merge.union(spliced)
+            unspliced_merge = unspliced_merge.union(unspliced)
+
+            # for key, count in spliced.items():
+            #     if key not in spliced_merge:
+            #         spliced_merge[key] = 0
+            #     spliced_merge[key] += count
+            # for key, count in unspliced.items():
+            #     if key not in unspliced_merge:
+            #         unspliced_merge[key] = 0
+            #     unspliced_merge[key] += count
+        print("Making sparse matrix for spliced counts...")
         spliced_csr, cells_1, genes_1 = self._make_csr(
             spliced_merge,
             probe_set
             )
+        print("Making sparse matrix for unspliced counts...")
         unspliced_csr, cells_2, genes_2 = self._make_csr(
             unspliced_merge,
             probe_set
@@ -211,10 +216,12 @@ class bam_parser:
             A tuple containing the gene name, cell barcode, and the probe ID.
         """
         if not read.has_tag("CB") or \
-                not read.has_tag("pr"):
-            return None, None, None
+                not read.has_tag("pr") or \
+                not read.has_tag("UB"):
+            return None, None, None, None
         cell_barcode = read.get_tag("CB")
         probe_id = read.get_tag('pr')
+        umi = read.get_tag('UB')
         probes = probe_id.split(';')
         if len(probes) == 1:
             probe_id = probes[0]
@@ -225,7 +232,7 @@ class bam_parser:
                     probe_id = probe
                     gene_id = probe.split('|')[0]
                     break
-        return cell_barcode, gene_id, probe_id
+        return cell_barcode, gene_id, probe_id, umi
 
     def _process_region(self, args):
         """
@@ -244,8 +251,8 @@ class bam_parser:
             unspliced counts for the region.
         """
         file, region, probe_set = args
-        spliced_counts = {}
-        unspliced_counts = {}
+        spliced_counts = set()
+        unspliced_counts = set()
 
         with pysam.AlignmentFile(file, "rb") as bam:
             for read in bam.fetch(region=region):
@@ -254,10 +261,12 @@ class bam_parser:
                         read.is_supplementary:
                     continue
                 try:
-                    cell_barcode, gene_id, probe_id = self._parse_read(read)
+                    cell_barcode, gene_id, probe_id, umi = \
+                        self._parse_read(read)
                     if cell_barcode is None or \
                             gene_id is None or \
-                            probe_id is None:
+                            probe_id is None or \
+                            umi is None:
                         continue
 
                     cell_idx = self.cell_map.loc[cell_barcode, 'index']
@@ -272,23 +281,42 @@ class bam_parser:
                     )
                     continue
 
-                key = (cell_idx, gene_idx)
+                key = (cell_idx, gene_idx, umi)
                 if is_spliced:
-                    if key not in spliced_counts:
-                        spliced_counts[key] = 0
-                    spliced_counts[key] += 1
+                    spliced_counts.add(key)
                 else:
-                    if key not in unspliced_counts:
-                        unspliced_counts[key] = 0
-                    unspliced_counts[key] += 1
+                    unspliced_counts.add(key)
 
         return spliced_counts, unspliced_counts
 
     def _make_csr(self, struct, probe_set: probe_set):
+        """
+        Convert a set of counts to a CSR sparse matrix.
+        Parameters
+        ----------
+        struct : set
+            A set of tuples where each tuple is (cell_index, gene_index, umi).
+        probe_set : probe_set
+            The probe set object containing gene mapping information.
+        Returns
+        -------
+        tuple
+            A tuple containing the CSR sparse matrix, list of cell barcodes,
+            and list of gene names.
+        """
         data = []
         i = []
         j = []
-        for key, count in struct.items():
+        counting = {}
+        for triplet in struct:
+            cell_idx, gene_idx, _ = triplet
+            # Use umi as a unique identifier for the read
+            key = (cell_idx, gene_idx)
+            if key not in counting:
+                counting[key] = 0
+            counting[key] += 1
+
+        for key, count in counting.items():
             data.append(count)
             i.append(key[0])
             j.append(key[1])
