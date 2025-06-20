@@ -154,6 +154,7 @@ class bam_parser:
             ))
 
         # Combine results from all regions
+        print("Merging results from all regions...")
         spliced_merge = set()
         unspliced_merge = set()
         for spliced, unspliced in results:
@@ -223,15 +224,11 @@ class bam_parser:
         probe_id = read.get_tag('pr')
         umi = read.get_tag('UB')
         probes = probe_id.split(';')
-        if len(probes) == 1:
+        if len(probes) > 1:
+            return None, None, None, None
+        else:
             probe_id = probes[0]
             gene_id = probe_id.split('|')[0]
-        else:
-            for probe in probes:
-                if probe != 'NA':
-                    probe_id = probe
-                    gene_id = probe.split('|')[0]
-                    break
         return cell_barcode, gene_id, probe_id, umi
 
     def _process_region(self, args):
