@@ -217,6 +217,8 @@ class bam_parser:
         cell_barcode = read.get_tag("CB")
         gene_id = read.get_tag('GX')
         probe_id = read.get_tag('pr')
+        # For rare case where multiple probes might be tagged
+        probe_id = probe_id.split(';')[0]
         return cell_barcode, gene_id, probe_id
 
     def _process_region(self, args):
