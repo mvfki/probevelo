@@ -27,7 +27,7 @@ class bam_parser:
     count_splice(probe_set: probe_set, n_thread: int = 1, adata: bool = False)
         Count spliced and unspliced reads to cell by gene CSR sparse matrices.
     """
-    def __init__(self, file: str):
+    def __init__(self, file: str, n_thread: int = 1):
         """
         Initializes the BamParser with a BAM file.
 
@@ -35,72 +35,10 @@ class bam_parser:
         ----------
         file : str
             The path to the BAM file to be parsed.
+        n_thread : int, optional
+            Number of threads to use for parallel processing, by default 1.
         """
         self.file = file
-        self.n_reads = 0
-        with pysam.AlignmentFile(file, "rb") as bam:
-            # check if index is available
-            if not bam.has_index():
-                raise FileNotFoundError(
-                    f"Index file for BAM {file} not found. Please index the " +
-                    "BAM file before using this parser."
-                )
-            cell_barcodes = set()
-            self.n_reads = bam.count()
-            pb = tqdm.tqdm(
-                desc="Collecting cell barcodes",
-                total=self.n_reads,
-                unit="reads"
-            )
-            bam.reset()
-            for read in bam.fetch(until_eof=True):
-                if read.is_unmapped or \
-                        read.is_secondary or \
-                        read.is_supplementary:
-                    pb.update(1)
-                    continue
-                cell_barcodes.add(read.get_tag("CB"))
-                pb.update(1)
-            pb.close()
-
-            cell_barcodes = list(cell_barcodes)
-            self.cell_map = pd.DataFrame(
-                index=cell_barcodes,
-                data={
-                    "index": range(len(cell_barcodes))
-                }
-            )
-
-    def count_splice(
-            self,
-            probe_set: probe_set,
-            n_thread: int = 1,
-            adata: bool = False
-            ) -> Union[tuple, anndata.AnnData]:
-        """
-        Count spliced and unspliced reads to cell by gene CSR sparse matrices.
-
-        Parameters
-        ----------
-        probe_set : probe_set, required
-            The probe set for mapping reads to spliced or unspliced.
-        n_thread : int, optional
-            Number of threads to use for counting, by default 1.
-        adata : bool, optional
-            If True, return an AnnData object with the counts, by default
-            False.
-
-        Returns
-        -------
-        Union[tuple, AnnData]
-            If adata is False, returns a tuple of (spliced_counts,
-            unspliced_counts, cell_barcodes, gene_names). If adata is True,
-            returns an AnnData object with the counts.
-        """
-
-        with pysam.AlignmentFile(self.file, "rb") as bam:
-            regions = list(bam.references)
-
         if n_thread < 1:
             Warning(
                 f"Requested {n_thread} threads, but it must be at least 1. " +
@@ -114,13 +52,100 @@ class bam_parser:
                 "are available. Using all available threads."
             )
             n_thread = mp.cpu_count()
+        self.n_thread = n_thread
+
+        # self.n_reads = 0
+        with pysam.AlignmentFile(file, "rb") as bam:
+            # check if index is available
+            if not bam.has_index():
+                raise FileNotFoundError(
+                    f"Index file for BAM {file} not found. Please index the " +
+                    "BAM file before using this parser."
+                )
+            # cell_barcodes = set()
+            # self.n_reads = bam.count()
+            self.regions = list(bam.references)
+
+        with mp.Pool(processes=self.n_thread) as pool:
+            cell_barcodes_per_region = list(tqdm.tqdm(
+                pool.imap(
+                    self._collect_cell_barcodes,
+                    [(self.file, region) for region in self.regions]
+                    ),
+                total=len(self.regions),
+                desc="Collecting cell barcodes",
+                unit="regions"
+            ))
+        cell_barcodes = set()
+        for region in cell_barcodes_per_region:
+            # region is a set of barcodes. Now update the union
+            cell_barcodes = cell_barcodes.union(region)
+
+        self.cell_map = pd.DataFrame(
+            index=list(cell_barcodes),
+            data={
+                "index": range(len(cell_barcodes))
+            }
+        )
+        print(f"Found {self.cell_map.shape[0]} unique cell barcodes in " +
+              "the BAM file.")
+
+    def _collect_cell_barcodes(self, args):
+        """
+        Collect cell barcodes from a region of the BAM file.
+
+        Parameters
+        ----------
+        args : tuple
+            A tuple containing the bam filename and region to process.
+
+        Returns
+        -------
+        set
+            A set of cell barcodes found in the specified region.
+        """
+        file, region = args
+        cell_barcodes = set()
+        with pysam.AlignmentFile(file, "rb") as bam:
+            for read in bam.fetch(region=region):
+                if read.is_unmapped or \
+                        read.is_secondary or \
+                        read.is_supplementary or \
+                        not read.has_tag("CB"):
+                    continue
+                cell_barcodes.add(read.get_tag("CB"))
+        return cell_barcodes
+
+    def count_splice(
+            self,
+            probe_set: probe_set,
+            adata: bool = False
+            ) -> Union[tuple, anndata.AnnData]:
+        """
+        Count spliced and unspliced reads to cell by gene CSR sparse matrices.
+
+        Parameters
+        ----------
+        probe_set : probe_set, required
+            The probe set for mapping reads to spliced or unspliced.
+        adata : bool, optional
+            If True, return an AnnData object with the counts, by default
+            False.
+
+        Returns
+        -------
+        Union[tuple, AnnData]
+            If adata is False, returns a tuple of (spliced_counts,
+            unspliced_counts, cell_barcodes, gene_names). If adata is True,
+            returns an AnnData object with the counts.
+        """
         # Prepare arguments for parallel processing
         args = [
             (self.file, region, probe_set)
-            for region in regions
+            for region in self.regions
         ]
         # Use multiprocessing to process regions in parallel
-        with mp.Pool(processes=n_thread) as pool:
+        with mp.Pool(processes=self.n_thread) as pool:
             results = list(tqdm.tqdm(
                 pool.imap(self._process_region, args),
                 total=len(args),
@@ -140,8 +165,14 @@ class bam_parser:
                 if key not in unspliced_merge:
                     unspliced_merge[key] = 0
                 unspliced_merge[key] += count
-        spliced_csr, cells_1, genes_1 = self._make_csr(spliced_merge, probe_set)
-        unspliced_csr, cells_2, genes_2 = self._make_csr(unspliced_merge, probe_set)
+        spliced_csr, cells_1, genes_1 = self._make_csr(
+            spliced_merge,
+            probe_set
+            )
+        unspliced_csr, cells_2, genes_2 = self._make_csr(
+            unspliced_merge,
+            probe_set
+            )
         assert cells_1 == cells_2, "Cell barcodes do not match between spliced and unspliced counts."
         assert genes_1 == genes_2, "Gene names do not match between spliced and unspliced counts."
         if not adata:

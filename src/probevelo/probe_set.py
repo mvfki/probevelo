@@ -47,6 +47,7 @@ class probe_set:
             `/path/to/cellranger/7.1.0/probe_sets/Chromium_Mouse_Transcriptome_Probe_Set_v1.0.1_mm10-2020-A.csv`
         """
         self._load_probe_set(file)
+        print(f"Found {self.gene_map.shape[0]} unique genes in the probe set.")
 
     def __repr__(self):
         repr_str = 'Probe set metadata:\n'

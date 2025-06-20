@@ -50,7 +50,7 @@ def arg_parse():
     )
 
     parser.add_argument(
-        "--output",
+        "-o", "--output",
         type=str,
         default="output.h5ad",
         help="Output file path for the results (default: output.h5ad)."
@@ -71,16 +71,9 @@ def main():
 
     args = arg_parse()
 
-    # Initialize the BAM parser and probe set
-    b = bam_parser(args.BAM)
+    b = bam_parser(args.BAM, n_thread=args.threads)
     p = probe_set(args.PROBE_SET)
-
-    # Count spliced and unspliced reads
-    adata = b.count_splice(
-        probe_set=p,
-        n_thread=args.threads,
-        adata=True
-    )
+    adata = b.count_splice(probe_set=p, adata=True)
 
     # Save the results to an AnnData object
     adata.write_h5ad(args.output)
