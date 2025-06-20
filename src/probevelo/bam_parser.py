@@ -27,7 +27,12 @@ class bam_parser:
     count_splice(probe_set: probe_set, n_thread: int = 1, adata: bool = False)
         Count spliced and unspliced reads to cell by gene CSR sparse matrices.
     """
-    def __init__(self, file: str, n_thread: int = 1, chunk_size: int = 100000):
+    def __init__(
+            self,
+            file: str,
+            n_thread: int = 1,
+            chunk_size: int = 1000000
+            ):
         """
         Initializes the BamParser with a BAM file.
 
@@ -38,7 +43,8 @@ class bam_parser:
         n_thread : int, optional
             Number of threads to use for parallel processing, by default 1.
         chunk_size : int, optional
-            Size of the chunks to process reads in parallel, by default 100000.
+            Size of the chunks to process reads in parallel, by default
+            1000000.
         """
         self.file = file
         if n_thread < 1:
@@ -98,10 +104,9 @@ class bam_parser:
                     continue
                 if i >= end:
                     break
-                if read.is_unmapped or \
-                        read.is_secondary or \
-                        read.is_supplementary or \
-                        not read.has_tag("CB"):
+                if not read.has_tag('xf'):
+                    continue
+                if read.get_tag('xf') != 25:
                     continue
                 cb.add(read.get_tag("CB"))
         return cb
@@ -129,11 +134,6 @@ class bam_parser:
             unspliced_counts, cell_barcodes, gene_names). If adata is True,
             returns an AnnData object with the counts.
         """
-        # Prepare arguments for parallel processing
-        # args = [
-        #     (self.file, region, probe_set)
-        #     for region in self.regions
-        # ]
         args = [
             (chunk_range, probe_set)
             for chunk_range in self.ranges
@@ -147,53 +147,36 @@ class bam_parser:
                 desc="Processing chunks",
                 unit="chunks"
             ))
-        # Use multiprocessing to process regions in parallel
-        # with mp.Pool(processes=self.n_thread) as pool:
-        #     results = list(tqdm.tqdm(
-        #         pool.imap(self._process_region, args),
-        #         total=len(args),
-        #         desc="Processing regions",
-        #         unit="regions"
-        #     ))
 
-        # Combine results from all regions
         print("Merging results...")
-        spliced_merge = set()
-        unspliced_merge = set()
+        spliced_merge = {}
+        unspliced_merge = {}
         for spliced, unspliced in results:
-            spliced_merge = spliced_merge.union(spliced)
-            unspliced_merge = unspliced_merge.union(unspliced)
+            for key, count in spliced.items():
+                if key not in spliced_merge:
+                    spliced_merge[key] = 0
+                spliced_merge[key] += count
+            for key, count in unspliced.items():
+                if key not in unspliced_merge:
+                    unspliced_merge[key] = 0
+                unspliced_merge[key] += count
 
-            # for key, count in spliced.items():
-            #     if key not in spliced_merge:
-            #         spliced_merge[key] = 0
-            #     spliced_merge[key] += count
-            # for key, count in unspliced.items():
-            #     if key not in unspliced_merge:
-            #         unspliced_merge[key] = 0
-            #     unspliced_merge[key] += count
         print("Making sparse matrix for spliced counts...")
-        spliced_csr, cells_1, genes_1 = self._make_csr(
-            spliced_merge,
-            probe_set
-            )
+        spliced_csr = self._make_csr(spliced_merge, probe_set)
         print("Making sparse matrix for unspliced counts...")
-        unspliced_csr, cells_2, genes_2 = self._make_csr(
-            unspliced_merge,
-            probe_set
-            )
-        assert cells_1 == cells_2, "Cell barcodes do not match between spliced and unspliced counts."
-        assert genes_1 == genes_2, "Gene names do not match between spliced and unspliced counts."
+        unspliced_csr = self._make_csr(unspliced_merge, probe_set)
+        cell_list = self.cell_map.index.tolist()
+        genes_list = probe_set.gene_map.index.tolist()
         if not adata:
-            return spliced_csr, unspliced_csr, cells_1, genes_1
+            return spliced_csr, unspliced_csr, cell_list, genes_list
         else:
             adata = anndata.AnnData(
                 X=spliced_csr + unspliced_csr,
-                obs=pd.DataFrame(index=cells_1),
-                var=pd.DataFrame(index=genes_1,
+                obs=pd.DataFrame(index=cell_list),
+                var=pd.DataFrame(index=genes_list,
                                  data={
                                      'gene_name':
-                                     probe_set.gene_map.loc[genes_1,
+                                     probe_set.gene_map.loc[genes_list,
                                                             'gene_name']
                                  }),
                 layers={
@@ -204,133 +187,40 @@ class bam_parser:
             adata.uns['probe_set'] = probe_set.probe_set_meta
             return adata
 
-    def _parse_read(self, read: pysam.libcalignedsegment.AlignedSegment) \
-            -> tuple:
-        """
-        Parse a single read and obtain all necessary info.
-
-        Parameters
-        ----------
-        read : pysam.libcalignedsegment.AlignedSegment
-            The read to parse.
-
-        Returns
-        -------
-        tuple
-            A tuple containing the gene name, cell barcode, and the probe ID.
-        """
-        if not read.has_tag("CB") or \
-                not read.has_tag("pr") or \
-                not read.has_tag("UB"):
-            return None, None, None, None
-        cell_barcode = read.get_tag("CB")
-        probe_id = read.get_tag('pr')
-        umi = read.get_tag('UB')
-        probes = probe_id.split(';')
-        if len(probes) > 1:
-            return None, None, None, None
-        else:
-            probe_id = probes[0]
-            gene_id = probe_id.split('|')[0]
-        return cell_barcode, gene_id, probe_id, umi
-
     def _process_chunk(self, args):
         chunk_range, probe_set = args
         start, end = chunk_range
-        spliced_counts = set()
-        unspliced_counts = set()
+        spliced_counts = {}
+        unspliced_counts = {}
         with pysam.AlignmentFile(self.file, "rb") as bam:
             for i, read in enumerate(bam.fetch(until_eof=True)):
                 if i < start:
                     continue
                 if i >= end:
                     break
-                if read.is_unmapped or \
-                        read.is_secondary or \
-                        read.is_supplementary:
+                # See https://www.10xgenomics.com/analysis-guides/tutorial-navigating-10x-barcoded-bam-files#quickstart
+                if not read.has_tag('xf'):
                     continue
-                try:
-                    cell_barcode, gene_id, probe_id, umi = \
-                        self._parse_read(read)
-                    if cell_barcode is None or \
-                            gene_id is None or \
-                            probe_id is None or \
-                            umi is None:
-                        continue
-
-                    cell_idx = self.cell_map.loc[cell_barcode, 'index']
-                    gene_idx = probe_set.gene_map.loc[gene_id, 'index']
-                    is_spliced = probe_set.is_spliced(probe_id)
-                except KeyError:
-                    print(
-                        "Failed identifying the cell: ",
-                        f"{cell_barcode}, " +
-                        f"or gene: {gene_id}, probe: {probe_id}. " +
-                        "Skipping this read."
-                    )
+                if read.get_tag('xf') != 25:
                     continue
+                cell_barcode = read.get_tag("CB")
+                probe_id = read.get_tag('pr')
+                gene_id = probe_id.split('|')[0]
 
-                key = (cell_idx, gene_idx, umi)
+                cell_idx = self.cell_map.loc[cell_barcode, 'index']
+                gene_idx = probe_set.gene_map.loc[gene_id, 'index']
+                is_spliced = probe_set.is_spliced(probe_id)
+
+                key = (cell_idx, gene_idx)
                 if is_spliced:
-                    spliced_counts.add(key)
+                    if key not in spliced_counts:
+                        spliced_counts[key] = 0
+                    spliced_counts[key] += 1
                 else:
-                    unspliced_counts.add(key)
+                    if key not in unspliced_counts:
+                        unspliced_counts[key] = 0
+                    unspliced_counts[key] += 1
         return spliced_counts, unspliced_counts
-
-    # def _process_region(self, args):
-    #     """
-    #     Process a region of the BAM file in parallel.
-
-    #     Parameters
-    #     ----------
-    #     args : tuple
-    #         A tuple containing the bam filename, region to process, probe_set
-    #         object.
-
-    #     Returns
-    #     -------
-    #     tuple
-    #         A tuple containing the COO representation of the spliced and
-    #         unspliced counts for the region.
-    #     """
-    #     file, region, probe_set = args
-    #     spliced_counts = set()
-    #     unspliced_counts = set()
-
-    #     with pysam.AlignmentFile(file, "rb") as bam:
-    #         for read in bam.fetch(region=region):
-    #             if read.is_unmapped or \
-    #                     read.is_secondary or \
-    #                     read.is_supplementary:
-    #                 continue
-    #             try:
-    #                 cell_barcode, gene_id, probe_id, umi = \
-    #                     self._parse_read(read)
-    #                 if cell_barcode is None or \
-    #                         gene_id is None or \
-    #                         probe_id is None or \
-    #                         umi is None:
-    #                     continue
-
-    #                 cell_idx = self.cell_map.loc[cell_barcode, 'index']
-    #                 gene_idx = probe_set.gene_map.loc[gene_id, 'index']
-    #                 is_spliced = probe_set.is_spliced(probe_id)
-    #             except KeyError:
-    #                 print(
-    #                     "Failed identifying the cell: ",
-    #                     f"{cell_barcode}, " +
-    #                     f"or gene: {gene_id}, probe: {probe_id}. " +
-    #                     "Skipping this read."
-    #                 )
-    #                 continue
-
-    #             key = (cell_idx, gene_idx, umi)
-    #             if is_spliced:
-    #                 spliced_counts.add(key)
-    #             else:
-    #                 unspliced_counts.add(key)
-
-    #     return spliced_counts, unspliced_counts
 
     def _make_csr(self, struct, probe_set: probe_set):
         """
@@ -350,16 +240,8 @@ class bam_parser:
         data = []
         i = []
         j = []
-        counting = {}
-        for triplet in struct:
-            cell_idx, gene_idx, _ = triplet
-            # Use umi as a unique identifier for the read
-            key = (cell_idx, gene_idx)
-            if key not in counting:
-                counting[key] = 0
-            counting[key] += 1
 
-        for key, count in counting.items():
+        for key, count in struct.items():
             data.append(count)
             i.append(key[0])
             j.append(key[1])
@@ -368,6 +250,4 @@ class bam_parser:
             shape=(self.cell_map.shape[0], probe_set.gene_map.shape[0])
         )
         csr = coo.tocsr()
-        cells = self.cell_map.index.tolist()
-        genes = probe_set.gene_map.index.tolist()
-        return csr, cells, genes
+        return csr
