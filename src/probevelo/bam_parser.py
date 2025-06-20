@@ -220,6 +220,8 @@ class bam_parser:
         # For rare case where multiple probes might be tagged
         gene_id = gene_id.split(';')[0]
         probe_id = probe_id.split(';')[0]
+        if probe_id == 'NA' or gene_id == 'NA':
+            return None, None, None
         return cell_barcode, gene_id, probe_id
 
     def _process_region(self, args):
@@ -248,16 +250,27 @@ class bam_parser:
                         read.is_secondary or \
                         read.is_supplementary:
                     continue
-                cell_barcode, gene_name, probe_id = self._parse_read(read)
-                if cell_barcode is None or \
-                        gene_name is None or \
-                        probe_id is None:
+                try:
+                    cell_barcode, gene_id, probe_id = self._parse_read(read)
+                    if cell_barcode is None or \
+                            gene_id is None or \
+                            probe_id is None:
+                        continue
+
+                    cell_idx = self.cell_map.loc[cell_barcode, 'index']
+                    gene_idx = probe_set.gene_map.loc[gene_id, 'index']
+                    is_spliced = probe_set.is_spliced(probe_id)
+                except KeyError:
+                    print(
+                        "Failed identifying the cell: ",
+                        f"{cell_barcode}, " +
+                        f"or gene: {gene_id}, probe: {probe_id}. " +
+                        "Skipping this read."
+                    )
                     continue
-                key = (
-                    self.cell_map.loc[cell_barcode, 'index'],
-                    probe_set.gene_map.loc[gene_name, 'index']
-                )
-                if probe_set.is_spliced(probe_id):
+
+                key = (cell_idx, gene_idx)
+                if is_spliced:
                     if key not in spliced_counts:
                         spliced_counts[key] = 0
                     spliced_counts[key] += 1
