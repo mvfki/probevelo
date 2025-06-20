@@ -218,6 +218,7 @@ class bam_parser:
         gene_id = read.get_tag('GX')
         probe_id = read.get_tag('pr')
         # For rare case where multiple probes might be tagged
+        gene_id = gene_id.split(';')[0]
         probe_id = probe_id.split(';')[0]
         return cell_barcode, gene_id, probe_id
 
