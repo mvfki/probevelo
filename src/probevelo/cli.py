@@ -3,6 +3,7 @@ from .bam_parser import bam_parser
 from .probe_set import probe_set
 import sys
 from importlib.metadata import version
+from .logger import logger
 
 
 __version__ = version("probevelo")
@@ -56,6 +57,13 @@ def arg_parse():
         help="Output file path for the results (default: output.h5ad)."
     )
 
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        default=False,
+        help="Suppress logging output (default: False)."
+    )
+
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
         sys.exit(0)
@@ -71,13 +79,14 @@ def main():
 
     args = arg_parse()
 
-    b = bam_parser(args.BAM, n_thread=args.threads)
-    p = probe_set(args.PROBE_SET)
+    b = bam_parser(args.BAM, n_thread=args.threads, quiet=args.quiet)
+    p = probe_set(args.PROBE_SET, quiet=args.quiet)
     adata = b.count_splice(probe_set=p, adata=True)
 
     # Save the results to an AnnData object
     adata.write_h5ad(args.output)
-    print(f"Results saved to {args.output}")
+    # logger level is set when passing the quiet argument to bam_parser
+    logger.info(f"Results saved to {args.output}")
 
 
 if __name__ == "__main__":

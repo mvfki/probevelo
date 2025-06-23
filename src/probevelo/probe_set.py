@@ -1,4 +1,5 @@
 import pandas as pd
+from .logger import logger
 
 
 class probe_set:
@@ -34,7 +35,7 @@ class probe_set:
         Check if a given probe ID is for a spliced region.
     """
 
-    def __init__(self, file: str):
+    def __init__(self, file: str, quiet: bool = False):
         """
         Initialize the probe_set object by loading the probe set from a file.
 
@@ -45,9 +46,13 @@ class probe_set:
             the 10X cellranger output folder named after `probe_set.csv`. You
             might also find it in the cellranger installation location, e.g.
             `/path/to/cellranger/7.1.0/probe_sets/Chromium_Mouse_Transcriptome_Probe_Set_v1.0.1_mm10-2020-A.csv`
+        quiet : bool, optional
+            If True, suppress logging output. Default is False.
         """
         self._load_probe_set(file)
-        print(f"Found {self.gene_map.shape[0]} unique genes in the probe set.")
+        if not quiet:
+            logger.info(f"Found {self.gene_map.shape[0]} unique genes " +
+                        "in the probe set.")
 
     def __repr__(self):
         repr_str = 'Probe set metadata:\n'
@@ -72,7 +77,8 @@ class probe_set:
             for line in f:
                 if line.startswith("#"):
                     key_value = line[1:].strip().split("=", 1)
-                    self.probe_set_meta[key_value[0].strip()] = key_value[1].strip()
+                    self.probe_set_meta[key_value[0].strip()] = key_value[1]\
+                        .strip()
                     header_n_row += 1
                 else:
                     break
