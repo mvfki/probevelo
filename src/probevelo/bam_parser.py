@@ -30,8 +30,7 @@ class bam_parser:
     def __init__(
             self,
             file: str,
-            n_thread: int = 1,
-            chunk_size: int = 1000000
+            n_thread: int = 1
             ):
         """
         Initializes the BamParser with a BAM file.
@@ -42,9 +41,6 @@ class bam_parser:
             The path to the BAM file to be parsed.
         n_thread : int, optional
             Number of threads to use for parallel processing, by default 1.
-        chunk_size : int, optional
-            Size of the chunks to process reads in parallel, by default
-            1000000.
         """
         self.file = file
         if n_thread < 1:
@@ -63,11 +59,11 @@ class bam_parser:
 
         # Initialize the chunking parameters
         self.n_thread = n_thread
-        self.chunk_size = chunk_size
         self.n_reads = 0
         with pysam.AlignmentFile(file, "rb") as bam:
-            self.n_reads = bam.count()
+            self.n_reads = bam.count(until_eof=True)
         print(f"Found {self.n_reads} reads in the BAM file.")
+        chunk_size = self.n_reads // self.n_thread + 1
         self.ranges = [(i, min(i + chunk_size, self.n_reads))
                        for i in range(0, self.n_reads, chunk_size)]
 
@@ -173,12 +169,14 @@ class bam_parser:
             adata = anndata.AnnData(
                 X=spliced_csr + unspliced_csr,
                 obs=pd.DataFrame(index=cell_list),
-                var=pd.DataFrame(index=genes_list,
-                                 data={
-                                     'gene_name':
-                                     probe_set.gene_map.loc[genes_list,
-                                                            'gene_name']
-                                 }),
+                var=pd.DataFrame(
+                    index=genes_list,
+                    data={
+                        'gene_name':
+                        probe_set.gene_map.loc[genes_list,
+                                               'gene_name'].astype('string')
+                    }
+                ),
                 layers={
                     'spliced': spliced_csr,
                     'unspliced': unspliced_csr
@@ -206,7 +204,6 @@ class bam_parser:
                 cell_barcode = read.get_tag("CB")
                 probe_id = read.get_tag('pr')
                 gene_id = probe_id.split('|')[0]
-
                 cell_idx = self.cell_map.loc[cell_barcode, 'index']
                 gene_idx = probe_set.gene_map.loc[gene_id, 'index']
                 is_spliced = probe_set.is_spliced(probe_id)
