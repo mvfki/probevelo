@@ -52,7 +52,7 @@ If you prefer to use the package programmatically, you can do so by importing th
 import probevelo
 
 probe_set = probevelo.probe_set('/path/to/10x/out/probe_set.csv')
-bam_parser = probevelo.bam_parser('/path/to/10x/out/sample_alignment.bam')
+bam_parser = probevelo.bam_parser('/path/to/10x/out/sample_alignment.bam', n_thread=32)
 
 adata = bam_parser.count_splice(probe_set, adata=True)
 ```
@@ -66,3 +66,16 @@ The returned `anndata.AnnData` object will contain:
 - `adata.var`: All gene IDs available in the probe set will be used as the index,
 and the `gene_name` column will be mapped as an alternative column. Note that multiple
 gene IDs can map to the same gene name, so we by default use the ID as the index.
+
+## Environment
+
+This package was so simple that we don't see necessarity to set a delicate environment for it. In case anything goes wrong, here is the list of important packages with their version numbers in the development environment:
+
+```
+python  3.12.2
+tqdm    4.66.2
+pandas  2.2.1
+anndata 0.11.3
+scipy   1.12.0
+pysam   0.23.3
+```
