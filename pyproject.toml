@@ -1,6 +1,6 @@
 [project]
 name = "probevelo"
-version = "0.1.0"
+version = "0.1.1"
 description = "Work-around for RNA velocity inference from 10X Fixed RNA Profiling using probe sets"
 authors = [{ name = "Yichen Wang", email = "wayichen@umich.edu" }]
 license = { text = "GPL-3" }
