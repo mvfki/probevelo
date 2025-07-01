@@ -73,34 +73,11 @@ class bam_parser:
 
         # Initialize the chunking parameters
         self.n_thread = n_thread
-        # n_reads = 0
-        # with pysam.AlignmentFile(file, "rb") as bam:
-        #     n_reads = bam.count(until_eof=True)
-        # object.__setattr__(self, 'n_reads', n_reads)
         with pysam.AlignmentFile(file, "rb") as bam:
             regions = list(bam.references)
 
         regions.append('*') # For unmapped reads
         object.__setattr__(self, 'regions', regions)
-        # object.__setattr__(self, 'n_reads', n_reads)
-        # logger.info(
-        #     f"Found {self.n_reads} reads in the BAM file: {file}"
-        # )
-        # # Create ranges for parallel processing
-        # chunk_size = self.n_reads // self.n_thread + 1
-        # ranges = [(i, min(i + chunk_size, self.n_reads))
-        #                for i in range(0, self.n_reads, chunk_size)]
-        # object.__setattr__(self, 'ranges', ranges)
-        # with mp.Pool(self.n_thread) as pool:
-        #     cb_per_region = list(tqdm.tqdm(
-        #         pool.imap(
-        #             self._collect_chunk_cb, self.ranges
-        #         ),
-        #         total=len(self.ranges),
-        #         desc="Collecting cell barcodes from chunks",
-        #         unit="chunks",
-        #         disable=self.quiet
-        #     ))
 
         with mp.Pool(self.n_thread) as pool:
             cb_per_region = list(tqdm.tqdm(
@@ -114,7 +91,6 @@ class bam_parser:
             ))
         cell_barcodes = set()
         for region in cb_per_region:
-            # region is a set of barcodes. Now update the union
             cell_barcodes = cell_barcodes.union(region)
 
         cell_map = pd.DataFrame(
@@ -138,22 +114,6 @@ class bam_parser:
                     continue
                 cell_barcodes.add(read.get_tag("CB"))
         return cell_barcodes
-
-    # def _collect_chunk_cb(self, chunk_range):
-    #     start, end = chunk_range
-    #     cb = set()
-    #     with pysam.AlignmentFile(self.file, "rb") as bam:
-    #         for i, read in enumerate(bam.fetch(until_eof=True)):
-    #             if i < start:
-    #                 continue
-    #             if i >= end:
-    #                 break
-    #             if not read.has_tag('xf'):
-    #                 continue
-    #             if read.get_tag('xf') != 25:
-    #                 continue
-    #             cb.add(read.get_tag("CB"))
-    #     return cb
 
     def __setattr__(self, name, value):
         if name == 'file':
@@ -248,10 +208,6 @@ class bam_parser:
             unspliced_counts, cell_barcodes, gene_names). If adata is True,
             returns an AnnData object with the counts.
         """
-        # args = [
-        #     (chunk_range, probe_set)
-        #     for chunk_range in self.ranges
-        # ]
         args = [
             (region, probe_set)
             for region in self.regions
@@ -266,16 +222,6 @@ class bam_parser:
                 unit="regions",
                 disable=self.quiet
             ))
-        # with mp.Pool(self.n_thread) as pool:
-        #     results = list(tqdm.tqdm(
-        #         pool.imap(
-        #             self._process_chunk, args
-        #         ),
-        #         total=len(self.ranges),
-        #         desc="Processing chunks",
-        #         unit="chunks",
-        #         disable=self.quiet
-        #     ))
 
         logger.info("Merging results...")
         spliced_merge = {}
@@ -348,40 +294,6 @@ class bam_parser:
                         unspliced_counts[key] = 0
                     unspliced_counts[key] += 1
         return spliced_counts, unspliced_counts
-
-    # def _process_chunk(self, args):
-    #     chunk_range, probe_set = args
-    #     start, end = chunk_range
-    #     spliced_counts = {}
-    #     unspliced_counts = {}
-    #     with pysam.AlignmentFile(self.file, "rb") as bam:
-    #         for i, read in enumerate(bam.fetch(until_eof=True)):
-    #             if i < start:
-    #                 continue
-    #             if i >= end:
-    #                 break
-    #             # See https://www.10xgenomics.com/analysis-guides/tutorial-navigating-10x-barcoded-bam-files#quickstart
-    #             if not read.has_tag('xf'):
-    #                 continue
-    #             if read.get_tag('xf') != 25:
-    #                 continue
-    #             cell_barcode = read.get_tag("CB")
-    #             probe_id = read.get_tag('pr')
-    #             gene_id = probe_id.split('|')[0]
-    #             cell_idx = self.cell_map.loc[cell_barcode, 'index']
-    #             gene_idx = probe_set.gene_map.loc[gene_id, 'index']
-    #             is_spliced = probe_set.is_spliced(probe_id)
-
-    #             key = (cell_idx, gene_idx)
-    #             if is_spliced:
-    #                 if key not in spliced_counts:
-    #                     spliced_counts[key] = 0
-    #                 spliced_counts[key] += 1
-    #             else:
-    #                 if key not in unspliced_counts:
-    #                     unspliced_counts[key] = 0
-    #                 unspliced_counts[key] += 1
-    #     return spliced_counts, unspliced_counts
 
     def _make_csr(self, struct, probe_set: probe_set):
         """
